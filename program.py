@@ -326,57 +326,60 @@ def analisar_documentos(documentos: List[DocumentoSEI]) -> AnaliseProcesso:
     return analise
 
 
-def montar_status(analise: AnaliseProcesso) -> str:
-    if analise.destaque_realizado:
-        return "destaque orçamentário já realizado pelo órgão"
+def extrair_numero_oficio(texto: str) -> str:
+    m = re.search(r"Of[ií]cio\s*N[ºo]?\s*(\d+/\d{4})", texto, re.I)
+    if m:
+        return m.group(1)
+    return "[número não identificado]"
 
-    if analise.programacao_financeira and not analise.autorizacao_execucao:
-        return "destaque orçamentário viabilizado com programação financeira disponibilizada pelo órgão"
+def extrair_orgao_destino(texto: str) -> Optional[str]:
+    m = re.search(r"À\s+Exma?.*?\n(.+)", texto)
+    if m:
+        linha = m.group(1).strip()
+        return linha.split("-")[-1].strip()
+    return None
 
-    if analise.remanejamento_orcamentario:
-        return "em tramitação na SEAP/SEPLAG para viabilização orçamentária (remanejamento)"
+def extrair_ano(texto: str) -> str:
+    m = re.search(r"exerc[ií]cio\s+de\s+(\d{4})", texto, re.I)
+    if m:
+        return m.group(1)
+    return "2026"
 
-    if analise.desdobramento_fonte and analise.autorizacao_execucao:
-        return "destaque viabilizado com desdobramento de fonte e autorização para execução"
+def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
 
-    if analise.desdobramento_fonte:
-        return "em tramitação para viabilização orçamentária com desdobramento de fonte"
+    oficio = None
+    reiteracao = None
 
-    if analise.em_analise:
-        orgao = analise.orgao_atual or "órgão demandado"
-        return f"em tramitação em {orgao} para análise"
+    for doc in documentos:
+        if doc.tipo_documento == "OFICIO" and "CEHAB/GOP" in doc.texto.upper():
+            oficio = doc
 
-    if analise.sem_manifestacao:
-        return "sem manifestação do órgão até o momento"
+        if doc.tipo_documento == "DESPACHO" and "REITER" in doc.texto.upper():
+            reiteracao = doc
 
-    return "em análise"
+    if not oficio:
+        return "Não foi identificado Ofício da GOP."
 
+    # ===== EXTRAÇÕES =====
 
-def montar_inicio(analise: AnaliseProcesso) -> str:
-    data = analise.data_solicitacao_gop or "[sem data identificada]"
-    if analise.dotacao_orcamentaria:
-        base = f"GOP solicitou declaração de dotação orçamentária e Destaque Orçamentário em {data}"
-    else:
-        base = f"GOP solicitou Destaque Orçamentário em {data}"
+    numero_oficio = extrair_numero_oficio(oficio.texto)
+    codigo = oficio.codigo_documento or "-"
+    data = oficio.data_assinatura or "[sem data]"
+    orgao = extrair_orgao_destino(oficio.texto) or "órgão não identificado"
+    ano = extrair_ano(oficio.texto)
 
-    if analise.possui_reiteracao and analise.data_reiteracao:
-        base += f" – reiterado em {analise.data_reiteracao}"
+    # ===== MONTA TEXTO =====
 
-    return base
+    obs = f"Ofício Nº {numero_oficio} (Doc. SEI Nº {codigo}) encaminhado a {orgao} em {data} solicitando destaque orçamentário referente ao exercício de {ano}."
 
+    # ===== REITERAÇÃO =====
 
-def montar_docs_relevantes(analise: AnaliseProcesso) -> str:
-    docs = analise.docs_relevantes[:4]
-    if not docs:
-        return "documentos analisados"
-    return " e ".join(docs)
+    if reiteracao:
+        codigo_r = reiteracao.codigo_documento or "-"
+        obs += f" Reiterado por meio do Despacho (Doc. SEI Nº {codigo_r}), sem manifestação do órgão até o momento."
 
-
-def gerar_obs(analise: AnaliseProcesso) -> str:
-    inicio = montar_inicio(analise)
-    status = montar_status(analise)
-    docs = montar_docs_relevantes(analise)
-    return f"{inicio} – {status} – conforme {docs}"
+    return obs
+    
 
 
 # ============================================================
@@ -524,7 +527,7 @@ class AppSEIObs:
         try:
             documentos = carregar_documentos(self.caminhos_arquivos)
             analise = analisar_documentos(documentos)
-            obs = gerar_obs(analise)
+            obs = gerar_obs(analise, documentos)
 
             detalhes = [
                 "OBS GERADA:",
