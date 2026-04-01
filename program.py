@@ -326,19 +326,62 @@ def extrair_orgao_destino(texto: str) -> Optional[str]:
     linhas = [linha.strip() for linha in texto.split("\n") if linha.strip()]
 
     for i, linha in enumerate(linhas):
-        if re.search(r"^Ao\s+Excelent[ií]ssimo|^À\s+Exma|^A\s+Sua\s+Excel", linha, re.I):
+        if re.search(r"^(Ao|À|A)\s+", linha, re.I):
+            bloco = linhas[i:i+6]
 
-            for j in range(i + 1, min(i + 5, len(linhas))):
-                linha_destino = linhas[j]
-
-                if " - " in linha_destino:
-                    partes = [p.strip() for p in linha_destino.split(" - ") if p.strip()]
+            # 1) tenta pegar linha com sigla ao final: "... - SEGI/SDS"
+            for item in bloco:
+                if " - " in item:
+                    partes = [p.strip() for p in item.split(" - ") if p.strip()]
                     ultimo = partes[-1]
-
                     if re.fullmatch(r"[A-Z]{2,}(?:/[A-Z]{2,})+", ultimo) or re.fullmatch(r"[A-Z]{2,}", ultimo):
                         return ultimo
 
+            # 2) tenta pegar cargo/órgão por extenso
+            for item in bloco:
+                item_upper = item.upper()
+
+                if any(chave in item_upper for chave in [
+                    "SECRETÁRIA DE ",
+                    "SECRETARIO DE ",
+                    "SECRETÁRIA DO ",
+                    "SECRETARIO DO ",
+                    "SECRETARIA DE ",
+                    "SECRETARIA DO ",
+                    "MINISTÉRIO",
+                    "PREFEITURA",
+                    "AGÊNCIA",
+                    "AGENCIA",
+                    "COMPANHIA",
+                    "SUPERINTENDÊNCIA",
+                    "SUPERINTENDENCIA",
+                ]):
+                    return item
+
     return None
+
+def identificar_retorno_para_gop(documentos: List[DocumentoSEI]) -> Optional[DocumentoSEI]:
+    for doc in documentos:
+        texto_upper = doc.texto.upper()
+
+        # casos com campo destinatário
+        if "DESTINATÁRIO: CEHAB GOP" in texto_upper or "DESTINATÁRIO: CEHAB/GOP" in texto_upper:
+            return doc
+
+        # casos mais amplos
+        if "CEHAB GOP" in texto_upper or "CEHAB/GOP" in texto_upper:
+            if any(chave in texto_upper for chave in [
+                "ENCAMINHO",
+                "ENCAMINHAMOS",
+                "SEGUE",
+                "EM RESPOSTA",
+                "PARA PROVIDÊNCIAS",
+                "PARA ANÁLISE",
+            ]):
+                return doc
+
+    return None
+
 
 def extrair_ano(texto: str) -> str:
     m = re.search(r"exerc[ií]cio\s+de\s+(\d{4})", texto, re.I)
@@ -346,8 +389,8 @@ def extrair_ano(texto: str) -> str:
         return m.group(1)
     return "2026"
 
-def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
 
+def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
     oficio = None
     reiteracao = None
 
@@ -361,26 +404,34 @@ def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
     if not oficio:
         return "Não foi identificado Ofício da GOP."
 
-    # ===== EXTRAÇÕES =====
-
     numero_oficio = extrair_numero_oficio(oficio.texto)
     codigo = oficio.codigo_documento or "-"
     data = oficio.data_assinatura or "[sem data]"
     orgao = extrair_orgao_destino(oficio.texto) or "órgão não identificado"
     ano = extrair_ano(oficio.texto)
 
-    # ===== MONTA TEXTO =====
-
-    obs = f"Ofício Nº {numero_oficio} (Doc. SEI Nº {codigo}) encaminhado a {orgao} em {data} solicitando destaque orçamentário referente ao exercício de {ano}."
-
-    # ===== REITERAÇÃO =====
+    obs = (
+        f"Ofício Nº {numero_oficio} (Doc. SEI Nº {codigo}) "
+        f"encaminhado a {orgao} em {data} "
+        f"solicitando destaque orçamentário referente ao exercício de {ano}."
+    )
 
     if reiteracao:
         codigo_r = reiteracao.codigo_documento or "-"
-        obs += f" Reiterado por meio do Despacho (Doc. SEI Nº {codigo_r}), sem manifestação do órgão até o momento."
+        obs += (
+            f" Reiterado por meio do Despacho (Doc. SEI Nº {codigo_r}), "
+            f"sem manifestação do órgão até o momento."
+        )
+
+    retorno = identificar_retorno_para_gop(documentos)
+    if retorno:
+        obs += (
+            f" Houve encaminhamento de retorno à GOP por meio do "
+            f"{retorno.tipo_documento.title()} (Doc. SEI Nº {retorno.codigo_documento or '-'})."
+        )
 
     return obs
-    
+
 
 
 # ============================================================
