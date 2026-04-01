@@ -44,11 +44,6 @@ class AnaliseProcesso:
     observacoes_tecnicas: List[str] = field(default_factory=list)
 
 
-# ============================================================
-#  UTILITÁRIOS DE TEXTO
-# ============================================================
-
-
 def limpar_texto(texto: str) -> str:
     texto = texto.replace("\x00", " ")
     texto = re.sub(r"[ \t]+", " ", texto)
@@ -169,11 +164,6 @@ def extrair_destinatario(texto: str) -> Optional[str]:
 def texto_contem(texto: str, termos: List[str]) -> bool:
     t = texto.upper()
     return any(term.upper() in t for term in termos)
-
-
-# ============================================================
-#  REGRAS DE NEGÓCIO - GOP / OBS
-# ============================================================
 
 
 def documento_e_oficio_gop(doc: DocumentoSEI) -> bool:
@@ -333,10 +323,21 @@ def extrair_numero_oficio(texto: str) -> str:
     return "[número não identificado]"
 
 def extrair_orgao_destino(texto: str) -> Optional[str]:
-    m = re.search(r"À\s+Exma?.*?\n(.+)", texto)
-    if m:
-        linha = m.group(1).strip()
-        return linha.split("-")[-1].strip()
+    linhas = [linha.strip() for linha in texto.split("\n") if linha.strip()]
+
+    for i, linha in enumerate(linhas):
+        if re.search(r"^Ao\s+Excelent[ií]ssimo|^À\s+Exma|^A\s+Sua\s+Excel", linha, re.I):
+
+            for j in range(i + 1, min(i + 5, len(linhas))):
+                linha_destino = linhas[j]
+
+                if " - " in linha_destino:
+                    partes = [p.strip() for p in linha_destino.split(" - ") if p.strip()]
+                    ultimo = partes[-1]
+
+                    if re.fullmatch(r"[A-Z]{2,}(?:/[A-Z]{2,})+", ultimo) or re.fullmatch(r"[A-Z]{2,}", ultimo):
+                        return ultimo
+
     return None
 
 def extrair_ano(texto: str) -> str:
