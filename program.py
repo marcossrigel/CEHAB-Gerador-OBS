@@ -322,43 +322,79 @@ def extrair_numero_oficio(texto: str) -> str:
         return m.group(1)
     return "[número não identificado]"
 
-def extrair_orgao_destino(texto: str) -> Optional[str]:
+
+def extrair_destinatario_oficio(texto: str) -> Optional[str]:
     linhas = [linha.strip() for linha in texto.split("\n") if linha.strip()]
 
     for i, linha in enumerate(linhas):
-        if re.search(r"^(Ao|À|A)\s+", linha, re.I):
-            bloco = linhas[i:i+6]
+        if re.search(r"^(Ao|À)\s+", linha, re.I) or re.search(r"^(Ilma\.?|Ilmo\.?|Exma\.?|Exmo\.?)", linha, re.I):
+            bloco = linhas[i:i+8]
 
-            # 1) tenta pegar linha com sigla ao final: "... - SEGI/SDS"
-            for item in bloco:
-                if " - " in item:
-                    partes = [p.strip() for p in item.split(" - ") if p.strip()]
-                    ultimo = partes[-1]
-                    if re.fullmatch(r"[A-Z]{2,}(?:/[A-Z]{2,})+", ultimo) or re.fullmatch(r"[A-Z]{2,}", ultimo):
-                        return ultimo
-
-            # 2) tenta pegar cargo/órgão por extenso
             for item in bloco:
                 item_upper = item.upper()
 
-                if any(chave in item_upper for chave in [
-                    "SECRETÁRIA DE ",
-                    "SECRETARIO DE ",
-                    "SECRETÁRIA DO ",
-                    "SECRETARIO DO ",
-                    "SECRETARIA DE ",
-                    "SECRETARIA DO ",
-                    "MINISTÉRIO",
-                    "PREFEITURA",
-                    "AGÊNCIA",
-                    "AGENCIA",
-                    "COMPANHIA",
-                    "SUPERINTENDÊNCIA",
-                    "SUPERINTENDENCIA",
-                ]):
-                    return item
+                if item_upper.startswith("ASSUNTO:"):
+                    break
+
+                if item_upper.startswith("OFÍCIO Nº") or item_upper.startswith("OFICIO Nº"):
+                    continue
+
+                if item_upper in {
+                    "ILMA. SRA.", "ILMO. SR.", "À EXMA SRA.", "AO EXCELENTÍSSIMO SENHOR",
+                    "AO EXCELENTISSIMO SENHOR", "À EXMA.", "EXMA. SRA.", "EXMO. SR."
+                }:
+                    continue
+
+                if re.fullmatch(r"[A-ZÁÉÍÓÚÃÕÇ\s]+", item) and len(item.split()) >= 2:
+                    continue
+
+                return item
 
     return None
+
+
+def normalizar_orgao_destino(destinatario: Optional[str]) -> str:
+    if not destinatario:
+        return "órgão não identificado"
+
+    d = destinatario.upper()
+
+    mapa = [
+        ("SECRETARIA DE DESENVOLVIMENTO URBANO E HABITAÇÃO", "SEDUH"),
+        ("SECRETARIA DE DESENVOLVIMENTO URBANO E HABITACAO", "SEDUH"),
+        ("SECRETÁRIA DE SAÚDE DO ESTADO DE PERNAMBUCO", "SES-PE"),
+        ("SECRETARIA DE SAÚDE DO ESTADO DE PERNAMBUCO", "SES-PE"),
+        ("SECRETARIA DE SAUDE DO ESTADO DE PERNAMBUCO", "SES-PE"),
+        ("SEGI/SDS", "SEGI/SDS"),
+        ("SECRETÁRIO EXECUTIVO DE GESTÃO INTEGRADA - SEGI/SDS", "SEGI/SDS"),
+        ("SECRETARIO EXECUTIVO DE GESTAO INTEGRADA - SEGI/SDS", "SEGI/SDS"),
+        ("SECTI", "SECTI"),
+        ("SEPLAG", "SEPLAG"),
+        ("SEFAZ", "SEFAZ"),
+        ("SDS", "SDS"),
+        ("SEE", "SEE"),
+        ("SES", "SES"),
+        ("SECULT", "SECULT"),
+        ("SEAP", "SEAP"),
+        ("SESP", "SESP"),
+        ("UPE", "UPE"),
+        ("SETUR", "SETUR"),
+        ("SECMULHER", "SECMULHER"),
+        ("ADAGRO", "ADAGRO"),
+        ("HEMOPE", "HEMOPE"),
+    ]
+
+    for chave, sigla in mapa:
+        if chave in d:
+            return sigla
+
+    # fallback: se houver uma sigla tipo XXXX/YYYY
+    m = re.search(r"\b([A-Z]{2,}(?:/[A-Z]{2,})+)\b", destinatario)
+    if m:
+        return m.group(1)
+
+    return destinatario
+
 
 def identificar_retorno_para_gop(documentos: List[DocumentoSEI]) -> Optional[DocumentoSEI]:
     for doc in documentos:
@@ -392,14 +428,13 @@ def extrair_ano(texto: str) -> str:
 
 def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
     oficio = None
-    reiteracao = None
 
     for doc in documentos:
         if doc.tipo_documento == "OFICIO" and "CEHAB/GOP" in doc.texto.upper():
             oficio = doc
+            break
 
-        if doc.tipo_documento == "DESPACHO" and "REITER" in doc.texto.upper():
-            reiteracao = doc
+    reiteracao = identificar_reiteracao(documentos)
 
     if not oficio:
         return "Não foi identificado Ofício da GOP."
@@ -407,7 +442,8 @@ def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
     numero_oficio = extrair_numero_oficio(oficio.texto)
     codigo = oficio.codigo_documento or "-"
     data = oficio.data_assinatura or "[sem data]"
-    orgao = extrair_orgao_destino(oficio.texto) or "órgão não identificado"
+    destinatario_bruto = extrair_destinatario_oficio(oficio.texto)
+    orgao = normalizar_orgao_destino(destinatario_bruto)
     ano = extrair_ano(oficio.texto)
 
     obs = (
@@ -417,22 +453,38 @@ def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
     )
 
     if reiteracao:
+        numero_r = extrair_numero_oficio(reiteracao.texto) if reiteracao.tipo_documento == "OFICIO" else "-"
+        data_r = reiteracao.data_assinatura or "[sem data]"
         codigo_r = reiteracao.codigo_documento or "-"
-        obs += (
-            f" Reiterado por meio do Despacho (Doc. SEI Nº {codigo_r}), "
-            f"sem manifestação do órgão até o momento."
-        )
 
-    retorno = identificar_retorno_para_gop(documentos)
-    if retorno:
-        obs += (
-            f" Houve encaminhamento de retorno à GOP por meio do "
-            f"{retorno.tipo_documento.title()} (Doc. SEI Nº {retorno.codigo_documento or '-'})."
-        )
+        if reiteracao.tipo_documento == "OFICIO":
+            obs += (
+                f" Reiterado em {data_r} através do Ofício Nº {numero_r} "
+                f"(Doc. SEI Nº {codigo_r})."
+            )
+        else:
+            obs += (
+                f" Reiterado em {data_r} através do {reiteracao.tipo_documento.title()} "
+                f"(Doc. SEI Nº {codigo_r})."
+            )
 
     return obs
 
 
+def identificar_reiteracao(documentos: List[DocumentoSEI]) -> Optional[DocumentoSEI]:
+    # 1. prioriza Ofício com texto de reiteração
+    for doc in documentos:
+        texto_upper = doc.texto.upper()
+        if doc.tipo_documento == "OFICIO" and "REITER" in texto_upper:
+            return doc
+
+    # 2. fallback para Despacho
+    for doc in documentos:
+        texto_upper = doc.texto.upper()
+        if doc.tipo_documento == "DESPACHO" and "REITER" in texto_upper:
+            return doc
+
+    return None
 
 # ============================================================
 #  CARGA DE DOCUMENTOS
