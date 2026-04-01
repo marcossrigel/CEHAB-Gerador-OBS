@@ -264,23 +264,24 @@ def analisar_documentos(documentos: List[DocumentoSEI]) -> AnaliseProcesso:
             item = f"Despacho {codigo}" if codigo else doc.tipo_documento.title()
             if item not in analise.docs_relevantes:
                 analise.docs_relevantes.append(item)
+        
+        def rotulo_doc(doc: DocumentoSEI) -> str:
+            prefixos = {
+                "OFICIO": "Ofício",
+                "DESPACHO": "Despacho",
+                "CI": "CI",
+                "AUTORIZACAO": "Autorização",
+                "SOF": "SOF",
+            }
+            prefixo = prefixos.get(doc.tipo_documento, "Documento")
+            return f"{prefixo} {doc.codigo_documento}" if doc.codigo_documento else prefixo
 
         # 6) Autorização / TED
         if doc.tipo_documento == "AUTORIZACAO":
             analise.autorizacao_execucao = True
-            def rotulo_doc(doc: DocumentoSEI) -> str:
-                prefixos = {
-                    "OFICIO": "Ofício",
-                    "DESPACHO": "Despacho",
-                    "CI": "CI",
-                    "AUTORIZACAO": "Autorização",
-                    "SOF": "SOF",
-                }
-                prefixo = prefixos.get(doc.tipo_documento, "Documento")
-                return f"{prefixo} {doc.codigo_documento}" if doc.codigo_documento else prefixo
+            item = rotulo_doc(doc)
             if item not in analise.docs_relevantes:
                 analise.docs_relevantes.append(item)
-            analise.autorizacao_execucao = True
 
         # 7) Destaque realizado / atendido
         if texto_contem(doc.texto, [
