@@ -553,15 +553,31 @@ def extrair_ano(texto: str) -> str:
         return m.group(1)
     return "2026"
 
+def identificar_oficio_principal(documentos: List[DocumentoSEI]) -> Optional[DocumentoSEI]:
+    oficios_gop = [
+        doc for doc in documentos
+        if doc.tipo_documento == "OFICIO" and "CEHAB/GOP" in doc.texto.upper()
+    ]
+
+    if not oficios_gop:
+        return None
+
+    # prioriza ofício que NÃO seja reiteração
+    nao_reiterados = [doc for doc in oficios_gop if not documento_e_reiteracao(doc)]
+    if nao_reiterados:
+        return sorted(
+            nao_reiterados,
+            key=lambda d: d.data_assinatura or "99/99/9999"
+        )[0]
+
+    # fallback: se todos forem reiteração, pega o mais antigo
+    return sorted(
+        oficios_gop,
+        key=lambda d: d.data_assinatura or "99/99/9999"
+    )[0]
 
 def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
-    oficio = None
-
-    for doc in documentos:
-        if doc.tipo_documento == "OFICIO" and "CEHAB/GOP" in doc.texto.upper():
-            oficio = doc
-            break
-
+    oficio = identificar_oficio_principal(documentos)
     reiteracao = identificar_reiteracao(documentos)
 
     if not oficio:
@@ -581,7 +597,7 @@ def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
         f"solicitando destaque orçamentário referente ao exercício de {ano}."
     )
 
-    if reiteracao:
+    if reiteracao and reiteracao != oficio:
         numero_r = extrair_numero_oficio(reiteracao.texto) if reiteracao.tipo_documento == "OFICIO" else "-"
         data_r = reiteracao.data_assinatura or "[sem data]"
         codigo_r = reiteracao.codigo_documento or "-"
@@ -599,19 +615,30 @@ def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
 
     return obs
 
-
 def identificar_reiteracao(documentos: List[DocumentoSEI]) -> Optional[DocumentoSEI]:
-    # 1. prioriza Ofício com texto de reiteração
-    for doc in documentos:
-        texto_upper = doc.texto.upper()
-        if doc.tipo_documento == "OFICIO" and "REITER" in texto_upper:
-            return doc
+    oficios_reiterados = [
+        doc for doc in documentos
+        if doc.tipo_documento == "OFICIO"
+        and "CEHAB/GOP" in doc.texto.upper()
+        and documento_e_reiteracao(doc)
+    ]
 
-    # 2. fallback para Despacho
-    for doc in documentos:
-        texto_upper = doc.texto.upper()
-        if doc.tipo_documento == "DESPACHO" and "REITER" in texto_upper:
-            return doc
+    if oficios_reiterados:
+        return sorted(
+            oficios_reiterados,
+            key=lambda d: d.data_assinatura or "99/99/9999"
+        )[0]
+
+    despachos_reiterados = [
+        doc for doc in documentos
+        if doc.tipo_documento == "DESPACHO" and "REITER" in doc.texto.upper()
+    ]
+
+    if despachos_reiterados:
+        return sorted(
+            despachos_reiterados,
+            key=lambda d: d.data_assinatura or "99/99/9999"
+        )[0]
 
     return None
 
