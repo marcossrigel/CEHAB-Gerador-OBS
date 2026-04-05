@@ -67,6 +67,134 @@ def extrair_texto_pdf(caminho_pdf: Path) -> str:
     return limpar_texto("\n".join(partes))
 
 
+def limpar_linha_destinatario(linha: str) -> str:
+    linha = re.sub(r"\s+", " ", linha).strip(" -:\t")
+    return linha.strip()
+
+
+def linha_e_tratamento(linha: str) -> bool:
+    l = linha.upper().strip()
+    tratamentos = {
+        "À EXMA SRA.", "A EXMA SRA.", "À EXMA. SRA.", "A EXMA. SRA.",
+        "EXMA. SRA.", "EXMA SRA.", "ILMA. SRA.", "ILMA SRA.",
+        "À EXMO SR.", "A EXMO SR.", "EXMO. SR.", "EXMO SR.",
+        "ILMO. SR.", "ILMO SR.", "AO EXCELENTÍSSIMO SENHOR",
+        "AO EXCELENTISSIMO SENHOR", "À SENHORA", "A SENHORA",
+        "AO SENHOR"
+    }
+    return l in tratamentos
+
+
+def linha_parece_assinatura_rodape(linha: str) -> bool:
+    l = linha.upper().strip()
+    chaves = [
+        "ATENCIOSAMENTE",
+        "DOCUMENTO ASSINADO ELETRONICAMENTE",
+        "A AUTENTICIDADE DESTE DOCUMENTO",
+        "COMPANHIA ESTADUAL DE HABITAÇÃO E OBRAS",
+        "RUA ODORICO MENDES",
+        "GOVPE -",
+    ]
+    return any(chave in l for chave in chaves)
+
+
+def extrair_destinatario_oficio(texto: str) -> Optional[str]:
+    linhas = [limpar_linha_destinatario(l) for l in texto.split("\n") if l.strip()]
+
+    inicio = None
+    for i, linha in enumerate(linhas):
+        linha_upper = linha.upper()
+        if (
+            re.match(r"^(À|AO|AOS|ÀS)\b", linha_upper)
+            or linha_e_tratamento(linha)
+        ):
+            inicio = i
+            break
+
+    if inicio is None:
+        return None
+
+    bloco = []
+    for linha in linhas[inicio:inicio + 10]:
+        linha_upper = linha.upper()
+
+        if linha_upper.startswith("ASSUNTO:"):
+            break
+
+        if linha_e_tratamento(linha):
+            continue
+
+        if re.match(r"^OF[IÍ]CIO\s+N[ºO]?", linha_upper):
+            continue
+
+        if linha_parece_assinatura_rodape(linha):
+            break
+
+        bloco.append(linha)
+
+    if not bloco:
+        return None
+
+    # remove linhas muito curtas de chamamento tipo "Prezado,"
+    bloco_filtrado = []
+    for linha in bloco:
+        linha_upper = linha.upper()
+        if linha_upper in {"PREZADO,", "PREZADA,", "PREZADOS,", "PREZADAS,"}:
+            continue
+        bloco_filtrado.append(linha)
+
+    if not bloco_filtrado:
+        return None
+
+    # regra prática:
+    # pega até 2 linhas antes do "Assunto":
+    # 1ª = nome
+    # 2ª = cargo/órgão
+    return " ".join(bloco_filtrado[:2]).strip()
+
+
+def extrair_nome_e_cargo_destinatario(texto: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    linhas = [limpar_linha_destinatario(l) for l in texto.split("\n") if l.strip()]
+
+    inicio = None
+    for i, linha in enumerate(linhas):
+        if (
+            re.match(r"^(À|AO|AOS|ÀS)\b", linha.upper())
+            or linha_e_tratamento(linha)
+        ):
+            inicio = i
+            break
+
+    if inicio is None:
+        return None, None, None
+
+    coletadas = []
+    for linha in linhas[inicio:inicio + 10]:
+        linha_upper = linha.upper()
+
+        if linha_upper.startswith("ASSUNTO:"):
+            break
+
+        if linha_e_tratamento(linha):
+            continue
+
+        if re.match(r"^OF[IÍ]CIO\s+N[ºO]?", linha_upper):
+            continue
+
+        if linha_parece_assinatura_rodape(linha):
+            break
+
+        if linha_upper in {"PREZADO,", "PREZADA,", "PREZADOS,", "PREZADAS,"}:
+            continue
+
+        coletadas.append(linha)
+
+    nome = coletadas[0] if len(coletadas) >= 1 else None
+    cargo = coletadas[1] if len(coletadas) >= 2 else None
+    completo = " ".join([x for x in [nome, cargo] if x]).strip() or None
+
+    return nome, cargo, completo
+
 def extrair_codigo_documento(nome_arquivo: str, texto: str) -> Optional[str]:
     m = re.search(r"SEI_(\d{6,9})_", nome_arquivo)
     if m:
@@ -442,13 +570,14 @@ def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
     numero_oficio = extrair_numero_oficio(oficio.texto)
     codigo = oficio.codigo_documento or "-"
     data = oficio.data_assinatura or "[sem data]"
-    destinatario_bruto = extrair_destinatario_oficio(oficio.texto)
-    orgao = normalizar_orgao_destino(destinatario_bruto)
+    nome_dest, cargo_dest, destinatario_completo = extrair_nome_e_cargo_destinatario(oficio.texto)
     ano = extrair_ano(oficio.texto)
+
+    destino_obs = destinatario_completo or "destinatário não identificado"
 
     obs = (
         f"Ofício Nº {numero_oficio} (Doc. SEI Nº {codigo}) "
-        f"encaminhado a {orgao} em {data} "
+        f"encaminhado a {destino_obs} em {data} "
         f"solicitando destaque orçamentário referente ao exercício de {ano}."
     )
 
@@ -633,6 +762,20 @@ class AppSEIObs:
             analise = analisar_documentos(documentos)
             obs = gerar_obs(analise, documentos)
 
+            oficio = next(
+                (
+                    doc for doc in documentos
+                    if doc.tipo_documento == "OFICIO" and "CEHAB/GOP" in doc.texto.upper()
+                ),
+                None
+            )
+
+            nome_dest, cargo_dest, destinatario_completo = (
+                extrair_nome_e_cargo_destinatario(oficio.texto)
+                if oficio else (None, None, None)
+            )
+            orgao_destino = normalizar_orgao_destino(destinatario_completo or "")
+
             detalhes = [
                 "OBS GERADA:",
                 obs,
@@ -648,14 +791,22 @@ class AppSEIObs:
                 f"- Destaque realizado: {'sim' if analise.destaque_realizado else 'não'}",
                 f"- Órgão atual identificado: {analise.orgao_atual or 'não identificado'}",
                 "",
+                "DESTINATÁRIO DO OFÍCIO:",
+                f"- Nome: {nome_dest or 'não identificado'}",
+                f"- Cargo/órgão: {cargo_dest or 'não identificado'}",
+                f"- Destinatário completo: {destinatario_completo or 'não identificado'}",
+                f"- Sigla normalizada do órgão: {orgao_destino or 'não identificado'}",
+                "",
                 "DOCUMENTOS LIDOS:",
             ]
+
             for doc in documentos:
                 detalhes.append(
                     f"- {doc.nome_arquivo} | tipo={doc.tipo_documento} | código={doc.codigo_documento or '-'} | data={doc.data_assinatura or '-'}"
                 )
 
             self.root.after(0, self._mostrar_resultado, "\n".join(detalhes), obs)
+
         except Exception as e:
             self.root.after(0, self._erro_processamento, str(e))
 
