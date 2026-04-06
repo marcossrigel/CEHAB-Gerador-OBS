@@ -775,6 +775,7 @@ class AppSEIObs:
     def _processar_em_thread(self) -> None:
         try:
             documentos = carregar_documentos(self.caminhos_arquivos)
+            texto_total = "\n\n".join([doc.texto for doc in documentos])  # <-- AQUI
             analise = analisar_documentos(documentos)
             obs = gerar_obs_com_ia(texto_total)
 
@@ -825,8 +826,6 @@ class AppSEIObs:
 
         except Exception as e:
             self.root.after(0, self._erro_processamento, str(e))
-
-        texto_total = "\n\n".join([doc.texto for doc in documentos])
 
     def _mostrar_resultado(self, detalhes: str, obs: str) -> None:
         self.txt_resultado.delete("1.0", tk.END)
