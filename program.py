@@ -1,3 +1,4 @@
+from openai import OpenAI
 import os
 import re
 import threading
@@ -6,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import List, Optional, Tuple
+
+client = OpenAI()
 
 try:
     from pypdf import PdfReader
@@ -516,7 +519,6 @@ def normalizar_orgao_destino(destinatario: Optional[str]) -> str:
         if chave in d:
             return sigla
 
-    # fallback: se houver uma sigla tipo XXXX/YYYY
     m = re.search(r"\b([A-Z]{2,}(?:/[A-Z]{2,})+)\b", destinatario)
     if m:
         return m.group(1)
@@ -528,11 +530,9 @@ def identificar_retorno_para_gop(documentos: List[DocumentoSEI]) -> Optional[Doc
     for doc in documentos:
         texto_upper = doc.texto.upper()
 
-        # casos com campo destinatário
         if "DESTINATÁRIO: CEHAB GOP" in texto_upper or "DESTINATÁRIO: CEHAB/GOP" in texto_upper:
             return doc
 
-        # casos mais amplos
         if "CEHAB GOP" in texto_upper or "CEHAB/GOP" in texto_upper:
             if any(chave in texto_upper for chave in [
                 "ENCAMINHO",
@@ -562,7 +562,6 @@ def identificar_oficio_principal(documentos: List[DocumentoSEI]) -> Optional[Doc
     if not oficios_gop:
         return None
 
-    # prioriza ofício que NÃO seja reiteração
     nao_reiterados = [doc for doc in oficios_gop if not documento_e_reiteracao(doc)]
     if nao_reiterados:
         return sorted(
@@ -570,7 +569,6 @@ def identificar_oficio_principal(documentos: List[DocumentoSEI]) -> Optional[Doc
             key=lambda d: d.data_assinatura or "99/99/9999"
         )[0]
 
-    # fallback: se todos forem reiteração, pega o mais antigo
     return sorted(
         oficios_gop,
         key=lambda d: d.data_assinatura or "99/99/9999"
@@ -642,11 +640,6 @@ def identificar_reiteracao(documentos: List[DocumentoSEI]) -> Optional[Documento
 
     return None
 
-# ============================================================
-#  CARGA DE DOCUMENTOS
-# ============================================================
-
-
 def carregar_documentos(caminhos: List[str]) -> List[DocumentoSEI]:
     documentos: List[DocumentoSEI] = []
 
@@ -671,10 +664,6 @@ def carregar_documentos(caminhos: List[str]) -> List[DocumentoSEI]:
     return documentos
 
 
-# ============================================================
-#  INTERFACE GRÁFICA - TKINTER
-# ============================================================
-
 class AppSEIObs:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -697,7 +686,7 @@ class AppSEIObs:
 
         titulo = ttk.Label(
             frame_topo,
-            text="Gerador de OBS GOP a partir de PDFs do SEI",
+            text="Gerador de OBS - GOP a partir de PDFs do SEI",
             font=("Segoe UI", 16, "bold"),
         )
         titulo.pack(anchor="w")
@@ -787,7 +776,7 @@ class AppSEIObs:
         try:
             documentos = carregar_documentos(self.caminhos_arquivos)
             analise = analisar_documentos(documentos)
-            obs = gerar_obs(analise, documentos)
+            obs = gerar_obs_com_ia(texto_total)
 
             oficio = next(
                 (
@@ -837,6 +826,8 @@ class AppSEIObs:
         except Exception as e:
             self.root.after(0, self._erro_processamento, str(e))
 
+        texto_total = "\n\n".join([doc.texto for doc in documentos])
+
     def _mostrar_resultado(self, detalhes: str, obs: str) -> None:
         self.txt_resultado.delete("1.0", tk.END)
         self.txt_resultado.insert("1.0", obs)
@@ -863,10 +854,28 @@ class AppSEIObs:
         self.txt_log.see(tk.END)
 
 
-# ============================================================
-#  MAIN
-# ============================================================
+def gerar_obs_com_ia(texto: str) -> str:
+    prompt = f"""
+    Você é um especialista em análise de documentos do SEI (CEHAB/GOP).
 
+    Gere uma OBS padrão com base no texto abaixo:
+
+    - Identifique o ofício principal
+    - Detecte reiteração (se houver)
+    - Ordene cronologicamente
+    - Gere no padrão formal
+
+    Texto:
+    {texto}
+    """
+
+    resposta = client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt,
+        max_output_tokens=300
+    )
+
+    return resposta.output_text
 
 def main() -> None:
     root = tk.Tk()
