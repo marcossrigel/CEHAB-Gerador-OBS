@@ -17,7 +17,6 @@ except Exception:
 
 @dataclass
 class DocumentoSEI:
-    is_solicitacao_gop: bool = False
     caminho: Path
     nome_arquivo: str
     texto: str
@@ -25,6 +24,7 @@ class DocumentoSEI:
     tipo_documento: str = "DESCONHECIDO"
     data_assinatura: Optional[str] = None  # dd/mm/aaaa
     resumo: str = ""
+    is_solicitacao_gop: bool = False
 
 
 @dataclass
