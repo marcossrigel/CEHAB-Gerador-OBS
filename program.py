@@ -74,7 +74,6 @@ def limpar_linha_destinatario(linha: str) -> str:
     linha = re.sub(r"\s+", " ", linha).strip(" -:\t")
     return linha.strip()
 
-
 def linha_e_tratamento(linha: str) -> bool:
     l = linha.upper().strip()
     tratamentos = {
@@ -775,9 +774,18 @@ class AppSEIObs:
     def _processar_em_thread(self) -> None:
         try:
             documentos = carregar_documentos(self.caminhos_arquivos)
-            texto_total = "\n\n".join([doc.texto for doc in documentos])  # <-- AQUI
+            texto_total = "\n\n".join([doc.texto for doc in documentos])
             analise = analisar_documentos(documentos)
-            obs = gerar_obs_com_ia(texto_total)
+
+            obs_gop = gerar_obs_gop(analise, documentos)
+            resumo_processo = gerar_resumo_processo_com_ia(texto_total)
+
+            resultado_final = (
+                "OBS GOP:\n"
+                f"{obs_gop}\n\n"
+                "RESUMO DO PROCESSO:\n"
+                f"{resumo_processo}"
+            )
 
             oficio = next(
                 (
@@ -794,8 +802,11 @@ class AppSEIObs:
             orgao_destino = normalizar_orgao_destino(destinatario_completo or "")
 
             detalhes = [
-                "OBS GERADA:",
-                obs,
+                "OBS GOP:",
+                obs_gop,
+                "",
+                "RESUMO DO PROCESSO:",
+                resumo_processo,
                 "",
                 "RESUMO DA ANÁLISE:",
                 f"- Data da solicitação GOP: {analise.data_solicitacao_gop or 'não identificada'}",
@@ -822,7 +833,7 @@ class AppSEIObs:
                     f"- {doc.nome_arquivo} | tipo={doc.tipo_documento} | código={doc.codigo_documento or '-'} | data={doc.data_assinatura or '-'}"
                 )
 
-            self.root.after(0, self._mostrar_resultado, "\n".join(detalhes), obs)
+            self.root.after(0, self._mostrar_resultado, "\n".join(detalhes), resultado_final)
 
         except Exception as e:
             self.root.after(0, self._erro_processamento, str(e))
@@ -851,6 +862,55 @@ class AppSEIObs:
     def _log(self, mensagem: str) -> None:
         self.txt_log.insert(tk.END, mensagem + "\n")
         self.txt_log.see(tk.END)
+
+def gerar_obs_gop(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
+    obs_base = gerar_obs(analise, documentos)
+
+    if obs_base == "Não foi identificado Ofício da GOP.":
+        return obs_base
+
+    # opcional: ajustar contatos conforme órgão
+    oficio = identificar_oficio_principal(documentos)
+    destinatario = ""
+    if oficio:
+        _, _, destinatario_completo = extrair_nome_e_cargo_destinatario(oficio.texto)
+        destinatario = normalizar_orgao_destino(destinatario_completo or "")
+
+    contato = ""
+    mapa_contatos = {
+        "SECTI": " (Contato Rosângela - Orçamento)",
+        "SEDUH": " (Contato Giceli - Financeiro)",
+    }
+    contato = mapa_contatos.get(destinatario, "")
+
+    return obs_base + contato
+
+def gerar_resumo_processo_com_ia(texto: str) -> str:
+    prompt = f"""
+    Você é um analista de processos do SEI da CEHAB.
+
+    Resuma o andamento do processo de forma objetiva, em português, em 1 parágrafo.
+
+    REGRAS:
+    - Não repetir a OBS inicial da GOP
+    - Focar no andamento após o ofício inicial
+    - Dizer quais setores/unidades aparecem
+    - Dizer o que está acontecendo no processo
+    - Não inventar informação
+    - Máximo de 5 linhas
+    - Texto corrido, sem tópicos
+
+    Texto dos documentos:
+    {texto}
+    """
+
+    resposta = client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt,
+        max_output_tokens=220
+    )
+
+    return resposta.output_text.strip()
 
 
 def gerar_obs_com_ia(texto: str) -> str:
