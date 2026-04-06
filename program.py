@@ -802,11 +802,7 @@ class AppSEIObs:
             orgao_destino = normalizar_orgao_destino(destinatario_completo or "")
 
             detalhes = [
-                "OBS GOP:",
-                obs_gop,
-                "",
-                "RESUMO DO PROCESSO:",
-                resumo_processo,
+                "PROCESSAMENTO CONCLUÍDO",
                 "",
                 "RESUMO DA ANÁLISE:",
                 f"- Data da solicitação GOP: {analise.data_solicitacao_gop or 'não identificada'}",
@@ -819,13 +815,10 @@ class AppSEIObs:
                 f"- Destaque realizado: {'sim' if analise.destaque_realizado else 'não'}",
                 f"- Órgão atual identificado: {analise.orgao_atual or 'não identificado'}",
                 "",
-                "DESTINATÁRIO DO OFÍCIO:",
-                f"- Nome: {nome_dest or 'não identificado'}",
-                f"- Cargo/órgão: {cargo_dest or 'não identificado'}",
-                f"- Destinatário completo: {destinatario_completo or 'não identificado'}",
-                f"- Sigla normalizada do órgão: {orgao_destino or 'não identificado'}",
+                "DESTINATÁRIO:",
+                f"- {destinatario_completo or 'não identificado'} ({orgao_destino})",
                 "",
-                "DOCUMENTOS LIDOS:",
+                "DOCUMENTOS:",
             ]
 
             for doc in documentos:
@@ -889,40 +882,20 @@ def gerar_resumo_processo_com_ia(texto: str) -> str:
     prompt = f"""
     Você é um analista de processos do SEI da CEHAB.
 
-    Resuma o andamento do processo de forma objetiva, em português, em 1 parágrafo.
+    Gere um RESUMO SIMPLES do andamento do processo.
 
     REGRAS:
-    - Não repetir a OBS inicial da GOP
-    - Focar no andamento após o ofício inicial
-    - Dizer quais setores/unidades aparecem
-    - Dizer o que está acontecendo no processo
-    - Não inventar informação
-    - Máximo de 5 linhas
-    - Texto corrido, sem tópicos
+    - NÃO usar tópicos, números ou listas
+    - NÃO usar "1.", "2.", "3."
+    - NÃO escrever "Ofício principal identificado"
+    - NÃO repetir a OBS da GOP
+    - Escrever como um parágrafo simples
+    - Máximo 4 linhas
+    - Linguagem direta e objetiva
+    - Dizer apenas o que aconteceu após o ofício
 
-    Texto dos documentos:
-    {texto}
-    """
-
-    resposta = client.responses.create(
-        model="gpt-4.1-mini",
-        input=prompt,
-        max_output_tokens=220
-    )
-
-    return resposta.output_text.strip()
-
-
-def gerar_obs_com_ia(texto: str) -> str:
-    prompt = f"""
-    Você é um especialista em análise de documentos do SEI (CEHAB/GOP).
-
-    Gere uma OBS padrão com base no texto abaixo:
-
-    - Identifique o ofício principal
-    - Detecte reiteração (se houver)
-    - Ordene cronologicamente
-    - Gere no padrão formal
+    EXEMPLO DE RESPOSTA:
+    Após o envio do ofício pela CEHAB/GOP, o processo seguiu para outros setores, com encaminhamentos internos e designações de responsáveis para acompanhamento do contrato.
 
     Texto:
     {texto}
@@ -931,10 +904,11 @@ def gerar_obs_com_ia(texto: str) -> str:
     resposta = client.responses.create(
         model="gpt-4.1-mini",
         input=prompt,
-        max_output_tokens=300
+        max_output_tokens=180
     )
 
-    return resposta.output_text
+    return resposta.output_text.strip()
+
 
 def main() -> None:
     root = tk.Tk()
