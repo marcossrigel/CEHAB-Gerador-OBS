@@ -17,6 +17,7 @@ except Exception:
 
 @dataclass
 class DocumentoSEI:
+    is_solicitacao_gop: bool = False
     caminho: Path
     nome_arquivo: str
     texto: str
@@ -297,7 +298,7 @@ def texto_contem(texto: str, termos: List[str]) -> bool:
 
 
 def documento_e_oficio_gop(doc: DocumentoSEI) -> bool:
-    return (
+    return doc.is_solicitacao_gop or (
         doc.tipo_documento == "OFICIO"
         and "CEHAB/GOP" in doc.texto.upper()
     )
@@ -553,6 +554,10 @@ def extrair_ano(texto: str) -> str:
     return "2026"
 
 def identificar_oficio_principal(documentos: List[DocumentoSEI]) -> Optional[DocumentoSEI]:
+    doc_manual = next((doc for doc in documentos if doc.is_solicitacao_gop), None)
+    if doc_manual:
+        return doc_manual
+
     oficios_gop = [
         doc for doc in documentos
         if doc.tipo_documento == "OFICIO" and "CEHAB/GOP" in doc.texto.upper()
@@ -563,15 +568,9 @@ def identificar_oficio_principal(documentos: List[DocumentoSEI]) -> Optional[Doc
 
     nao_reiterados = [doc for doc in oficios_gop if not documento_e_reiteracao(doc)]
     if nao_reiterados:
-        return sorted(
-            nao_reiterados,
-            key=lambda d: d.data_assinatura or "99/99/9999"
-        )[0]
+        return sorted(nao_reiterados, key=lambda d: d.data_assinatura or "99/99/9999")[0]
 
-    return sorted(
-        oficios_gop,
-        key=lambda d: d.data_assinatura or "99/99/9999"
-    )[0]
+    return sorted(oficios_gop, key=lambda d: d.data_assinatura or "99/99/9999")[0]
 
 def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
     oficio = identificar_oficio_principal(documentos)
@@ -642,7 +641,7 @@ def identificar_reiteracao(documentos: List[DocumentoSEI]) -> Optional[Documento
 def carregar_documentos(caminhos: List[str]) -> List[DocumentoSEI]:
     documentos: List[DocumentoSEI] = []
 
-    for caminho_str in caminhos:
+    for i, caminho_str in enumerate(caminhos):
         caminho = Path(caminho_str)
         texto = extrair_texto_pdf(caminho)
         codigo = extrair_codigo_documento(caminho.name, texto)
@@ -657,6 +656,7 @@ def carregar_documentos(caminhos: List[str]) -> List[DocumentoSEI]:
                 codigo_documento=codigo,
                 tipo_documento=tipo,
                 data_assinatura=data,
+                is_solicitacao_gop=(i == 0),
             )
         )
 
@@ -746,11 +746,20 @@ class AppSEIObs:
 
         self.caminhos_arquivos = list(caminhos)
         self.lista_arquivos.delete(0, tk.END)
-        for caminho in self.caminhos_arquivos:
-            self.lista_arquivos.insert(tk.END, os.path.basename(caminho))
+
+        if self.caminhos_arquivos:
+            self.lista_arquivos.insert(tk.END, "=== Arquivo de solicitação da GOP ===")
+            self.lista_arquivos.insert(tk.END, os.path.basename(self.caminhos_arquivos[0]))
+
+            if len(self.caminhos_arquivos) > 1:
+                self.lista_arquivos.insert(tk.END, "")
+                self.lista_arquivos.insert(tk.END, "=== Demais arquivos do processo ===")
+                for caminho in self.caminhos_arquivos[1:]:
+                    self.lista_arquivos.insert(tk.END, os.path.basename(caminho))
 
         self.label_status.config(text=f"{len(self.caminhos_arquivos)} arquivo(s) selecionado(s).")
         self._log("Arquivos selecionados com sucesso.")
+        self._log("O primeiro arquivo foi definido como: Arquivo de solicitação da GOP.")
 
     def limpar(self) -> None:
         self.caminhos_arquivos = []
@@ -787,13 +796,7 @@ class AppSEIObs:
                 f"{resumo_processo}"
             )
 
-            oficio = next(
-                (
-                    doc for doc in documentos
-                    if doc.tipo_documento == "OFICIO" and "CEHAB/GOP" in doc.texto.upper()
-                ),
-                None
-            )
+            oficio = identificar_oficio_principal(documentos)
 
             nome_dest, cargo_dest, destinatario_completo = (
                 extrair_nome_e_cargo_destinatario(oficio.texto)
