@@ -570,44 +570,111 @@ def identificar_oficio_principal(documentos: List[DocumentoSEI]) -> Optional[Doc
     return sorted(oficios, key=chave_data)[0]
 
 
-def gerar_obs(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
-    oficio = identificar_oficio_principal(documentos)
-    reiteracao = identificar_reiteracao(documentos)
+def gerar_obs_inteligente(documentos: List[DocumentoSEI]) -> str:
+    documentos = sorted(documentos, key=chave_data)
 
-    if not oficio:
-        return "Não foi identificado Ofício da GOP."
+    pedido = None
+    pendencia = None
+    resposta = None
 
-    numero_oficio = extrair_numero_oficio(oficio.texto)
-    codigo = oficio.codigo_documento or "-"
-    data = oficio.data_assinatura or "[sem data]"
-    nome_dest, cargo_dest, destinatario_completo = extrair_nome_e_cargo_destinatario(oficio.texto)
-    ano = extrair_ano(oficio.texto)
+    for doc in documentos:
+        texto = doc.texto.upper()
 
-    destino_obs = destinatario_completo or "destinatário não identificado"
+        # 1. Pedido inicial (Ofício da GOP)
+        if doc.tipo_documento == "OFICIO" and pedido is None:
+            pedido = doc
+
+        # 2. Pendência (órgão pedindo informação)
+        elif any(p in texto for p in [
+            "SOLICITAR",
+            "SOLICITAÇÃO DE INFORMAÇÕES",
+            "ESCLARECER",
+            "DETALHAMENTO",
+            "CLASSIFICAR A DESPESA"
+        ]):
+            pendencia = doc
+
+        # 3. Resposta (GOP respondendo)
+        elif doc.tipo_documento == "DESPACHO":
+            resposta = doc
+
+    # -------------------------
+    # MONTA TEXTO
+    # -------------------------
+
+    if not pedido:
+        return "Não foi possível identificar o pedido inicial."
+
+    numero_oficio = extrair_numero_oficio(pedido.texto)
+    data_pedido = pedido.data_assinatura or "[sem data]"
+    codigo = pedido.codigo_documento or "-"
 
     obs = (
-        f"Ofício Nº {numero_oficio} (Doc. SEI Nº {codigo}) "
-        f"encaminhado a {destino_obs} em {data} "
-        f"solicitando destaque orçamentário referente ao exercício de {ano}."
+        f"Ofício Nº {numero_oficio} (Doc. SEI Nº {codigo}) encaminhado em {data_pedido} "
+        f"solicitando destaque orçamentário."
     )
 
-    if reiteracao and reiteracao != oficio:
-        numero_r = extrair_numero_oficio(reiteracao.texto) if reiteracao.tipo_documento == "OFICIO" else "-"
-        data_r = reiteracao.data_assinatura or "[sem data]"
-        codigo_r = reiteracao.codigo_documento or "-"
+    # Pendência
+    if pendencia:
+        data_pendencia = pendencia.data_assinatura or "[sem data]"
+        obs += (
+            f" Em {data_pendencia}, o órgão solicitou complementação de informações "
+            f"para instrução do processo."
+        )
 
-        if reiteracao.tipo_documento == "OFICIO":
-            obs += (
-                f" Reiterado em {data_r} através do Ofício Nº {numero_r} "
-                f"(Doc. SEI Nº {codigo_r})."
-            )
-        else:
-            obs += (
-                f" Reiterado em {data_r} através do {reiteracao.tipo_documento.title()} "
-                f"(Doc. SEI Nº {codigo_r})."
-            )
+    # Resposta
+    if resposta:
+        data_resposta = resposta.data_assinatura or "[sem data]"
+        numero_despacho = resposta.codigo_documento or "-"
+        obs += (
+            f" Em atendimento, o Despacho nº {numero_despacho} foi encaminhado em {data_resposta}, "
+            f"retornando o processo com as informações requeridas."
+        )
+
+    # Status final
+    obs += " Processo em aguardo de análise/liberação orçamentária."
 
     return obs
+
+
+def gerar_obs_com_ia(texto_total: str) -> str:
+    prompt = f"""
+    Você é analista da GOP (Gerência de Orçamento e Planejamento).
+
+    Gere uma OBS no formato de CONTROLE DE PROCESSO.
+
+    REGRAS IMPORTANTES:
+    - Texto curto e objetivo (máx. 6 linhas)
+    - NÃO explicar o objeto detalhadamente
+    - NÃO descrever contexto ou justificativa
+    - Priorizar códigos (SEI, Ofício, Despacho)
+    - Priorizar datas
+    - Seguir ordem cronológica
+    - Focar apenas no fluxo do processo
+    - Finalizar com o status atual da pendência
+
+    ESTRUTURA:
+    - Pedido inicial (Ofício + data)
+    - Tramitação relevante (Despachos)
+    - Pendência (Ofício ou solicitação)
+    - Resposta (Despacho)
+    - Situação atual
+
+    EXEMPLO:
+    "Ofício nº X encaminhado em DATA solicitando destaque orçamentário. Em DATA, o processo foi encaminhado por meio do Despacho nº XXXX. Em DATA, foi solicitada complementação (...). Em atendimento, o Despacho nº XXXX foi encaminhado (...), permanecendo em aguardo de destaque orçamentário."
+
+    Texto:
+    {texto_total}
+    """
+
+    resposta = client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt,
+        max_output_tokens=200
+    )
+
+    return resposta.output_text.strip()
+
 
 def identificar_reiteracao(documentos: List[DocumentoSEI]) -> Optional[DocumentoSEI]:
     oficios_reiterados = [
@@ -765,18 +832,15 @@ class AppSEIObs:
     def _processar_em_thread(self) -> None:
         try:
             documentos = carregar_documentos(self.caminhos_arquivos)
-            texto_total = "\n\n".join([doc.texto for doc in documentos])
-            analise = analisar_documentos(documentos)
+            documentos_ordenados = sorted(documentos, key=chave_data)
 
-            obs_gop = gerar_obs_gop(analise, documentos)
-            resumo_processo = gerar_resumo_processo_com_ia(texto_total)
-
-            resultado_final = (
-                "OBS GOP:\n"
-                f"{obs_gop}\n\n"
-                "RESUMO DO PROCESSO:\n"
-                f"{resumo_processo}"
+            texto_total = "\n\n".join(
+                [f"[{doc.data_assinatura or 'sem data'}] {doc.texto}" for doc in documentos_ordenados]
             )
+
+            analise = analisar_documentos(documentos)
+            obs_gop = gerar_obs_com_ia(texto_total)
+            resultado_final = obs_gop
 
             oficio = identificar_oficio_principal(documentos)
 
@@ -806,7 +870,7 @@ class AppSEIObs:
                 "DOCUMENTOS:",
             ]
 
-            for doc in documentos:
+            for doc in documentos_ordenados:
                 detalhes.append(
                     f"- {doc.nome_arquivo} | tipo={doc.tipo_documento} | código={doc.codigo_documento or '-'} | data={doc.data_assinatura or '-'}"
                 )
@@ -840,28 +904,6 @@ class AppSEIObs:
     def _log(self, mensagem: str) -> None:
         self.txt_log.insert(tk.END, mensagem + "\n")
         self.txt_log.see(tk.END)
-
-def gerar_obs_gop(analise: AnaliseProcesso, documentos: List[DocumentoSEI]) -> str:
-    obs_base = gerar_obs(analise, documentos)
-
-    if obs_base == "Não foi identificado Ofício da GOP.":
-        return obs_base
-
-    # opcional: ajustar contatos conforme órgão
-    oficio = identificar_oficio_principal(documentos)
-    destinatario = ""
-    if oficio:
-        _, _, destinatario_completo = extrair_nome_e_cargo_destinatario(oficio.texto)
-        destinatario = normalizar_orgao_destino(destinatario_completo or "")
-
-    contato = ""
-    mapa_contatos = {
-        "SECTI": " (Contato Rosângela - Orçamento)",
-        "SEDUH": " (Contato Giceli - Financeiro)",
-    }
-    contato = mapa_contatos.get(destinatario, "")
-
-    return obs_base + contato
 
 def gerar_resumo_processo_com_ia(texto: str) -> str:
     prompt = f"""
